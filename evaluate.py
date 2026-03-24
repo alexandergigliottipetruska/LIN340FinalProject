@@ -81,6 +81,8 @@ def generate(model, tokenizer, prompts, suppress_tokens=None):
                 early_stopping=True,
                 pad_token_id=tokenizer.eos_token_id,
                 logits_processor=logits_processor,
+                repetition_penalty=config.REPETITION_PENALTY,
+                no_repeat_ngram_size=config.NO_REPEAT_NGRAM_SIZE,
             )
         new_tokens = out[0, inputs["input_ids"].shape[1]:]
         results.append(tokenizer.decode(new_tokens, skip_special_tokens=True))
@@ -113,6 +115,7 @@ def bertscore(references, hypotheses):
         hypotheses, references,
         lang="it",
         model_type="dbmdz/bert-base-italian-cased",
+        num_layers=9,
         verbose=False,
     )
     return {"bertscore_p": P.mean().item(), "bertscore_r": R.mean().item(), "bertscore_f1": F.mean().item()}
