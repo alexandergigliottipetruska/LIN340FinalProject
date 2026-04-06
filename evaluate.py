@@ -66,7 +66,7 @@ class BlockBrackets(LogitsProcessor):
         return scores
 
 
-def generate(model, tokenizer, prompts, suppress_tokens=None):
+def get_continuations(model, tokenizer, prompts, suppress_tokens=None):
     device = next(model.parameters()).device
 
     # Builds list for LogitsProcessor, empty for raw mode and for tagged having BlockBrackets.
@@ -92,11 +92,12 @@ def generate(model, tokenizer, prompts, suppress_tokens=None):
                 repetition_penalty=config.REPETITION_PENALTY, no_repeat_ngram_size=config.NO_REPEAT_NGRAM_SIZE,
             )
             # Decode newly generated tokens and skip prompt ones. 
-            results.append(tokenizer.decode(out[0, inputs['input_ids'].shape[1]:], skip_special_tokens=True))
+            generated = out[0, inputs['input_ids'].shape[1]:]
+            results.append(tokenizer.decode(generated, skip_special_tokens=True))
     return results
 
 
-def evaluate_model(mode, prompts, references):
+def run_eval(mode, prompts, references):
     # Use correct checkpoint and test file for mode. 
     checkpoint = config.RAW_OUTPUT_DIR if mode == 'raw' else config.TAGGED_OUTPUT_DIR
     test_file = config.RAW_TEST_FILE if mode == 'raw' else config.TAGGED_TEST_FILE
@@ -111,17 +112,19 @@ def evaluate_model(mode, prompts, references):
 
     # Tagged model should not have bracket tokens appearing, output needs to be clean. Suppresses them.
     suppress = config.SYNTACTIC_SPECIAL_TOKENS if mode == 'tagged' else None # if raw, no suppression of course.
-    hyps = generate(model, tokenizer, prompts, suppress_tokens=suppress)
+    hyps = get_continuations(model, tokenizer, prompts, suppress_tokens=suppress)
 
     # BLEU to measure n-gram overlap, -1 to -4 to check unigram to 4-gram overlap.
-    # Smoothing to prevent a score of 0 when there are no matches. 
+    # Smoothing to prevent a score of 0 when there are no matches.
     smoother = SmoothingFunction().method1
     # BLEU expects references as list of lists, multiple are allowed per sentence.
     ref_toks = [[ref.split()] for ref in references]
     hyp_toks = [hyp.split() for hyp in hyps]
     scores = {'mode': mode, 'perplexity': ppl}
-    for n, w in enumerate([(1,0,0,0), (.5,.5,0,0), (1/3,1/3,1/3,0), (.25,.25,.25,.25)], 1):
-        scores[f'bleu_{n}'] = corpus_bleu(ref_toks, hyp_toks, weights=w, smoothing_function=smoother)
+    scores['bleu_1'] = corpus_bleu(ref_toks, hyp_toks, weights=(1, 0, 0, 0), smoothing_function=smoother)
+    scores['bleu_2'] = corpus_bleu(ref_toks, hyp_toks, weights=(.5, .5, 0, 0), smoothing_function=smoother)
+    scores['bleu_3'] = corpus_bleu(ref_toks, hyp_toks, weights=(1/3, 1/3, 1/3, 0), smoothing_function=smoother)
+    scores['bleu_4'] = corpus_bleu(ref_toks, hyp_toks, weights=(.25, .25, .25, .25), smoothing_function=smoother)
 
     # ROUGE measures recall of reference n-grams in hypothesis, -1 unigrams, -2 bigrams, and -L longest commen subsequence.
     rouge = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
@@ -162,7 +165,7 @@ def main():
     # Eval for both modes and results
     results = []
     for mode in ['raw', 'tagged']:
-        scores, hyps = evaluate_model(mode, prompts, references)
+        scores, hyps = run_eval(mode, prompts, references)
         # Store hypothesis with metrics 
         scores['hypotheses'] = hyps
         results.append(scores)

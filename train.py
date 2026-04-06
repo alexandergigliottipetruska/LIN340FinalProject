@@ -9,7 +9,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 import config
 
 
-def make_dataset(path, tokenizer):
+def build_dataset(path, tokenizer):
     """
     Reads the text file and encodes every line into token IDs. These are then concatenated into a sequence, 
     separated by EOS (End of Sentence tokens), and split into fixed length chunks, which are used for training.
@@ -32,12 +32,12 @@ def make_dataset(path, tokenizer):
     return Dataset.from_dict({'input_ids': chunks})
 
 
-def add_syntax_tokens(tokenizer, model):
+def extend_vocab(tokenizer, model):
     """
     Add bracket tokens to tokenizer vocab and add
     """
     # Add the bracket tokens to the tokenizer vocabulary.
-    # add_special_tokens returns the number of tokens added. 
+    # add_special_tokens returns the number of tokens added.
     n = tokenizer.add_special_tokens({'additional_special_tokens': config.SYNTACTIC_SPECIAL_TOKENS})
     if n > 0:
         # Resize embedding matrix to account for new tokens.
@@ -56,9 +56,14 @@ def main():
     tagged = sys.argv[1] == 'tagged'
 
     # Get data files and output directory corresponding to selected mode. 
-    train_file = config.TAGGED_TRAIN_FILE if tagged else config.RAW_TRAIN_FILE
-    val_file = config.TAGGED_VAL_FILE if tagged else config.RAW_VAL_FILE
-    output_dir = config.TAGGED_OUTPUT_DIR if tagged else config.RAW_OUTPUT_DIR
+    if tagged:
+        train_file = config.TAGGED_TRAIN_FILE
+        val_file   = config.TAGGED_VAL_FILE
+        output_dir = config.TAGGED_OUTPUT_DIR
+    else:
+        train_file = config.RAW_TRAIN_FILE
+        val_file   = config.RAW_VAL_FILE
+        output_dir = config.RAW_OUTPUT_DIR
 
     # Load pretrained Italian GPT2 tokenizer. 
     tokenizer = AutoTokenizer.from_pretrained(config.BASE_MODEL)
@@ -71,7 +76,7 @@ def main():
 
     # For tagged model, extend vocab with bracket tokens so model can learn sentence boundaries. 
     if tagged:
-        tokenizer, model = add_syntax_tokens(tokenizer, model)
+        tokenizer, model = extend_vocab(tokenizer, model)
 
     # LoRA config (Low Rank Adaptation), used to train small low rank matrices inserted into the attention layer.
     # Chosen instead of updating all the weights during fine-tuning due to computation limits on colab. 
@@ -85,23 +90,29 @@ def main():
     model.print_trainable_parameters()
 
     # Preprocessed text files used to build train and validation datasets
-    train_ds = make_dataset(train_file, tokenizer)
-    val_ds = make_dataset(val_file, tokenizer)
-    print(f'Train: {len(train_ds)} blocks, Val: {len(val_ds)} blocks') # get length of each. 
+    train_ds = build_dataset(train_file, tokenizer)
+    val_ds = build_dataset(val_file, tokenizer)
+    print(f'Train: {len(train_ds)} blocks, Val: {len(val_ds)} blocks') # get length of each.
 
-    # Training hyperparameters set
     training_args = TrainingArguments(
-        output_dir=output_dir, num_train_epochs=config.NUM_EPOCHS,
-        per_device_train_batch_size=config.BATCH_SIZE, gradient_accumulation_steps=config.GRAD_ACCUM,
-        learning_rate=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY, warmup_steps=config.WARMUP_STEPS,
+        output_dir=output_dir,
+        num_train_epochs=config.NUM_EPOCHS,
+        per_device_train_batch_size=config.BATCH_SIZE,
+        gradient_accumulation_steps=config.GRAD_ACCUM,
+        learning_rate=config.LEARNING_RATE,
+        weight_decay=config.WEIGHT_DECAY,
+        warmup_steps=config.WARMUP_STEPS,
         fp16=torch.cuda.is_available(),
+        eval_strategy='epoch',
+        save_strategy='epoch',
+        load_best_model_at_end=True,
         # Save and evaluate per epoch, one time, and keep best model checkpoint
-        eval_strategy='epoch', save_strategy='epoch', load_best_model_at_end=True,
-        logging_steps=50, report_to='none',
+        logging_steps=50,
+        report_to='none',
     )
 
     # DataCollectorForLanguageModeling deals with shifting labels for causal LM training, while min=False specifies it is causal
-    # (next token prediction), as opposed to masked langauge modelling. 
+    # (next token prediction), as opposed to masked langauge modelling.
     trainer = Trainer(
         model=model,
         args=training_args,
